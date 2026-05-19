@@ -88,8 +88,14 @@ const SignupPage = () => {
 
       if (result.error) throw result.error;
 
-      // After verification, redirect based on role
-      const userRole = result.data.user.user_metadata.role || 'user';
+      // Fetch user role from profiles table to make it robust
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', result.data.user.id)
+        .single();
+
+      const userRole = profileData?.role || result.data.user.user_metadata.role || 'user';
       
       if (userRole === 'owner') {
         navigate('/owner-dashboard');

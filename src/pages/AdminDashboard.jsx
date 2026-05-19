@@ -38,10 +38,21 @@ const AdminDashboard = () => {
   const fetchData = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      const isAdminSession = localStorage.getItem('admin_session') === 'true';
       const { data: { user } } = await supabase.auth.getUser();
       
-      if (!isAdminSession && (!user || user.user_metadata?.role !== 'admin')) {
+      if (!user) {
+        navigate('/login');
+        return;
+      }
+
+      // Verify admin role from profiles table (most reliable source)
+      const { data: adminProfile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      if (adminProfile?.role !== 'admin') {
         navigate('/login');
         return;
       }
@@ -77,7 +88,6 @@ const AdminDashboard = () => {
   };
 
   const handleLogout = async () => {
-    localStorage.removeItem('admin_session');
     await supabase.auth.signOut();
     navigate('/login');
   };

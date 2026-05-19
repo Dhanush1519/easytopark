@@ -39,7 +39,7 @@ const OwnerDashboard = () => {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
           fetchOwnerData();
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'parking_spots', filter: `owner_id=eq.${user.id}` }, () => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'parking_spots' }, () => {
           fetchOwnerData();
         })
         .subscribe();
@@ -613,6 +613,8 @@ const Overview = ({ stats, slotStatus, setSlotStatus }) => {
         .status-indicator.pending { background: #E74C3C; box-shadow: 0 0 8px #E74C3C; }
         .status-select { border: none; background: none; font-weight: 700; font-size: 1.1rem; padding: 0; cursor: pointer; }
         .dashboard-sections-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 2rem; }
+        .recent-activity { padding: 2rem; }
+        .earnings-chart { padding: 2rem; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
         .reservations-list { display: flex; flex-direction: column; gap: 0.75rem; }
         .reservation-item { display: flex; align-items: center; justify-content: space-between; padding: 1rem; background: #F9F9F9; border-radius: 12px; transition: background 0.3s; cursor: pointer; }
@@ -939,7 +941,7 @@ const AddParkingWizard = ({ step, setStep, onComplete, setActiveTab }) => {
           <button className="btn-back" onClick={prevStep} disabled={step === 1}>
             <ChevronLeft size={20} /> Back
           </button>
-          <button className="btn-next btn-primary" onClick={step === 5 ? handlePublish : nextStep} disabled={publishing}>
+          <button className="btn-next btn-primary" onClick={step === 5 ? handleComplete : nextStep} disabled={publishing}>
             {publishing ? "Publishing..." : step === 5 ? "Publish Listing" : "Next Step"} <ChevronRight size={20} />
           </button>
         </div>
@@ -984,63 +986,340 @@ const AddParkingWizard = ({ step, setStep, onComplete, setActiveTab }) => {
   );
 };
 
-const AvailabilityCalendar = ({ listings }) => {
+const AvailabilityCalendar = ({ listings, profile, refresh }) => {
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [slots, setSlots] = useState([
+    { id: 1, time: '09:00 AM - 06:00 PM', status: 'Available' }
+  ]);
+  const [showAddSlot, setShowAddSlot] = useState(false);
+  const [newSlotTime, setNewSlotTime] = useState('09:00 AM - 05:00 PM');
+  
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentType, setPaymentType] = useState('upi');
+  const [payoutData, setPayoutData] = useState({
+    holderName: profile?.payout_info?.holderName || '',
+    upiId: profile?.payout_info?.upiId || '',
+    bankName: profile?.payout_info?.bankName || '',
+    accountNumber: profile?.payout_info?.accountNumber || '',
+    ifscCode: profile?.payout_info?.ifscCode || '',
+    customDetails: profile?.payout_info?.customDetails || ''
+  });
+  const [savingPayment, setSavingPayment] = useState(false);
+
+  const handleAddSlot = (e) => {
+    e.preventDefault();
+    if (!newSlotTime.trim()) return;
+    setSlots([...slots, { id: Date.now(), time: newSlotTime, status: 'Available' }]);
+    setNewSlotTime('09:00 AM - 05:00 PM');
+    setShowAddSlot(false);
+  };
+
+  const handleToggleBlock = (id) => {
+    setSlots(slots.map(s => s.id === id ? { ...s, status: s.status === 'Available' ? 'Blocked' : 'Available' } : s));
+  };
+
+  const handleSavePayment = async (e) => {
+    e.preventDefault();
+    setSavingPayment(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const payout_info = {
+        type: paymentType,
+        ...payoutData
+      };
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ payout_info })
+        .eq('id', user.id);
+
+      if (error) throw error;
+      alert('Payout setup successfully configured!');
+      setShowPaymentForm(false);
+      refresh();
+    } catch (err) {
+      console.error('Error saving payout setup:', err);
+      alert('Failed to save payout settings.');
+    } finally {
+      setSavingPayment(false);
+    }
+  };
+
+  const daysInMonth = 30;
+  const currentMonthName = selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+
   return (
     <div className="availability-tab fade-in">
       <div className="section-header">
-        <h1>Manage Availability</h1>
-        <p>Sync your calendar for {listings.length} active spots.</p>
+        <h1>Manage Availability & Payouts</h1>
+        <p>Sync your calendar, block times, and manage payment methods for {listings.length} spots.</p>
       </div>
 
-      <div className="calendar-card card">
-        <div className="calendar-header">
-          <div className="current-month">April 2026</div>
-          <div className="cal-nav">
-            <button className="btn-icon"><ChevronLeft size={20} /></button>
-            <button className="btn-icon"><ChevronRight size={20} /></button>
+      <div className="availability-grid-layout">
+        <div className="calendar-card card">
+          <div className="calendar-header">
+            <div className="current-month">{currentMonthName}</div>
+            <div className="cal-nav">
+              <button className="btn-icon" onClick={() => {
+                const prev = new Date(selectedDate);
+                prev.setMonth(prev.getMonth() - 1);
+                setSelectedDate(prev);
+              }}><ChevronLeft size={20} /></button>
+              <button className="btn-icon" onClick={() => {
+                const next = new Date(selectedDate);
+                next.setMonth(next.getMonth() + 1);
+                setSelectedDate(next);
+              }}><ChevronRight size={20} /></button>
+            </div>
+          </div>
+
+          <div className="calendar-grid">
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+              <div key={d} className="cal-day-label">{d}</div>
+            ))}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const dayNum = i + 1;
+              const isSelected = selectedDate.getDate() === dayNum;
+              return (
+                <div 
+                  key={i} 
+                  className={`cal-date ${isSelected ? 'selected' : ''}`}
+                  onClick={() => {
+                    const newD = new Date(selectedDate);
+                    newD.setDate(dayNum);
+                    setSelectedDate(newD);
+                  }}
+                >
+                  {dayNum}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="availability-details card glass">
+            <h3>Daily Schedule: {selectedDate.toLocaleDateString([], { month: 'long', day: 'numeric' })}</h3>
+            <div className="schedule-list">
+              {slots.map(slot => (
+                <div key={slot.id} className={`schedule-item ${slot.status.toLowerCase()}`}>
+                  <span className="time">{slot.time}</span>
+                  <span className="status">{slot.status}</span>
+                  <button className="btn-action" onClick={() => handleToggleBlock(slot.id)}>
+                    {slot.status === 'Available' ? 'Block' : 'Unblock'}
+                  </button>
+                </div>
+              ))}
+            </div>
+            
+            {showAddSlot ? (
+              <form onSubmit={handleAddSlot} className="add-slot-form">
+                <input 
+                  type="text" 
+                  value={newSlotTime} 
+                  onChange={e => setNewSlotTime(e.target.value)} 
+                  placeholder="e.g. 09:00 AM - 05:00 PM"
+                  required
+                />
+                <div className="form-actions">
+                  <button type="submit" className="btn-save-slot">Add</button>
+                  <button type="button" className="btn-cancel-slot" onClick={() => setShowAddSlot(false)}>Cancel</button>
+                </div>
+              </form>
+            ) : (
+              <button className="btn-primary-outline w-100" onClick={() => setShowAddSlot(true)}>+ Add New Time Slot</button>
+            )}
           </div>
         </div>
 
-        <div className="calendar-grid">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-            <div key={d} className="cal-day-label">{d}</div>
-          ))}
-          {Array.from({length: 30}).map((_, i) => (
-            <div key={i} className={`cal-date ${i+1 === 27 ? 'selected' : ''}`}>
-              {i + 1}
-            </div>
-          ))}
-        </div>
-
-        <div className="availability-details card glass">
-          <h3>Daily Schedule: April 27</h3>
-          <div className="schedule-list">
-            <div className="schedule-item available">
-              <span className="time">09:00 AM - 06:00 PM</span>
-              <span className="status">Available</span>
-              <button className="btn-action">Block</button>
-            </div>
+        <div className="payout-card card">
+          <div className="card-header" style={{ marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+            <h3>Payment & Payout Setup</h3>
           </div>
-          <button className="btn-primary-outline w-100">+ Add New Time Slot</button>
+          
+          <div className="payout-content">
+            {profile?.payout_info && Object.keys(profile.payout_info).length > 0 ? (
+              <div className="payout-active-info">
+                <div className="active-pill">Active Payout Channel</div>
+                <div className="payout-type-label" style={{ marginTop: '0.5rem' }}>
+                  <strong>Type:</strong> {String(profile.payout_info.type || '').toUpperCase()}
+                </div>
+                <div className="payout-details-list" style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
+                  <p><strong>Holder Name:</strong> {profile.payout_info.holderName || 'N/A'}</p>
+                  {profile.payout_info.type === 'upi' && <p><strong>UPI ID:</strong> {profile.payout_info.upiId}</p>}
+                  {profile.payout_info.type === 'bank' && (
+                    <>
+                      <p><strong>Bank Name:</strong> {profile.payout_info.bankName}</p>
+                      <p><strong>Account Number:</strong> {profile.payout_info.accountNumber}</p>
+                      <p><strong>IFSC Code:</strong> {profile.payout_info.ifscCode}</p>
+                    </>
+                  )}
+                  {profile.payout_info.type === 'custom' && <p><strong>Details:</strong> {profile.payout_info.customDetails}</p>}
+                </div>
+                <button className="btn-primary w-100" onClick={() => setShowPaymentForm(true)}>Update Payout Method</button>
+              </div>
+            ) : (
+              <div className="payout-empty">
+                <DollarSign size={48} color="var(--primary-green)" style={{opacity:0.3, marginBottom:'1rem'}} />
+                <h4>No payout method configured</h4>
+                <p>Add a payout option to receive customer bookings directly to your bank account or UPI app.</p>
+                <button className="btn-primary w-100" style={{marginTop:'1.5rem'}} onClick={() => setShowPaymentForm(true)}>
+                  Add Custom Payment Setup
+                </button>
+              </div>
+            )}
+
+            {showPaymentForm && (
+              <div className="payout-form-overlay fade-in">
+                <div className="payout-form-container card">
+                  <div className="form-header">
+                    <h4>Payout Setup Form</h4>
+                    <button className="close-btn" onClick={() => setShowPaymentForm(false)}><X size={18} /></button>
+                  </div>
+                  <form onSubmit={handleSavePayment}>
+                    <div className="form-group" style={{ marginBottom: '1rem' }}>
+                      <label>Payout Option Type</label>
+                      <select value={paymentType} onChange={e => setPaymentType(e.target.value)} style={{ width: '100%' }}>
+                        <option value="upi">UPI (GPay / PhonePe / Paytm)</option>
+                        <option value="bank">Direct Bank Transfer</option>
+                        <option value="custom">Custom Payment Method</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '1rem' }}>
+                      <label>Account Holder Name</label>
+                      <input 
+                        type="text" 
+                        value={payoutData.holderName} 
+                        onChange={e => setPayoutData({...payoutData, holderName: e.target.value})} 
+                        placeholder="Holder name"
+                        style={{ width: '100%' }}
+                        required
+                      />
+                    </div>
+
+                    {paymentType === 'upi' && (
+                      <div className="form-group" style={{ marginBottom: '1rem' }}>
+                        <label>UPI ID</label>
+                        <input 
+                          type="text" 
+                          value={payoutData.upiId} 
+                          onChange={e => setPayoutData({...payoutData, upiId: e.target.value})} 
+                          placeholder="username@okaxis"
+                          style={{ width: '100%' }}
+                          required
+                        />
+                      </div>
+                    )}
+
+                    {paymentType === 'bank' && (
+                      <>
+                        <div className="form-group" style={{ marginBottom: '1rem' }}>
+                          <label>Bank Name</label>
+                          <input 
+                            type="text" 
+                            value={payoutData.bankName} 
+                            onChange={e => setPayoutData({...payoutData, bankName: e.target.value})} 
+                            placeholder="e.g. State Bank of India"
+                            style={{ width: '100%' }}
+                            required
+                          />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: '1rem' }}>
+                          <label>Account Number</label>
+                          <input 
+                            type="text" 
+                            value={payoutData.accountNumber} 
+                            onChange={e => setPayoutData({...payoutData, accountNumber: e.target.value})} 
+                            placeholder="Account number"
+                            style={{ width: '100%' }}
+                            required
+                          />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: '1rem' }}>
+                          <label>IFSC Code</label>
+                          <input 
+                            type="text" 
+                            value={payoutData.ifscCode} 
+                            onChange={e => setPayoutData({...payoutData, ifscCode: e.target.value})} 
+                            placeholder="SBIN0001234"
+                            style={{ width: '100%' }}
+                            required
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {paymentType === 'custom' && (
+                      <div className="form-group" style={{ marginBottom: '1rem' }}>
+                        <label>Custom Instructions / Payout Details</label>
+                        <textarea 
+                          value={payoutData.customDetails} 
+                          onChange={e => setPayoutData({...payoutData, customDetails: e.target.value})} 
+                          placeholder="Describe your custom payout arrangement..."
+                          rows="3"
+                          style={{ width: '100%' }}
+                          required
+                        />
+                      </div>
+                    )}
+
+                    <div className="form-actions" style={{marginTop:'1.5rem'}}>
+                      <button type="submit" className="btn-primary w-100" disabled={savingPayment}>
+                        {savingPayment ? 'Saving Payout...' : 'Save Payout Details'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       <style jsx="true">{`
-        .calendar-card { padding: 2rem; display: grid; grid-template-columns: 1fr 320px; gap: 2rem; }
+        .availability-grid-layout { display: grid; grid-template-columns: 1fr 350px; gap: 2rem; }
+        .calendar-card { padding: 2rem; display: grid; grid-template-columns: 1.5fr 1fr; gap: 2rem; }
         .calendar-header { display: flex; justify-content: space-between; margin-bottom: 2rem; grid-column: 1 / -1; }
         .current-month { font-size: 1.4rem; font-weight: 800; }
         .cal-nav { display: flex; gap: 10px; }
         .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
         .cal-day-label { text-align: center; font-weight: 800; color: var(--text-muted); font-size: 0.8rem; padding-bottom: 10px; }
-        .cal-date { height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: #F9F9F9; font-weight: 700; cursor: pointer; }
+        .cal-date { height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: #F9F9F9; font-weight: 700; cursor: pointer; transition: 0.3s; }
+        .cal-date:hover { background: #EBF5FF; }
         .cal-date.selected { background: var(--primary-green); color: white; }
         .availability-details { padding: 1.5rem; }
         .schedule-list { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem; }
         .schedule-item { display: flex; flex-direction: column; padding: 12px; border-radius: 10px; border-left: 4px solid #2ECC71; background: #F9F9F9; }
+        .schedule-item.blocked { border-left-color: #E74C3C; }
         .time { font-weight: 700; font-size: 0.9rem; }
         .status { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: #2ECC71; }
-        .btn-action { margin-top: 8px; font-size: 0.8rem; font-weight: 700; color: var(--primary-green); text-align: left; background: none; }
-        .btn-primary-outline { border: 1.5px solid var(--primary-green); color: var(--primary-green); padding: 10px; border-radius: 8px; font-weight: 700; background: none; }
+        .schedule-item.blocked .status { color: #E74C3C; }
+        .btn-action { margin-top: 8px; font-size: 0.8rem; font-weight: 700; color: var(--primary-green); text-align: left; background: none; cursor: pointer; }
+        .btn-primary-outline { border: 1.5px solid var(--primary-green); color: var(--primary-green); padding: 12px; border-radius: 10px; font-weight: 700; background: none; cursor: pointer; transition: 0.3s; }
+        .btn-primary-outline:hover { background: rgba(10, 66, 38, 0.05); }
+        .add-slot-form { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 10px; }
+        .add-slot-form input { padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); }
+        .form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+        .btn-save-slot { padding: 6px 12px; background: var(--primary-green); color: white; font-weight: 700; border-radius: 6px; font-size: 0.85rem; }
+        .btn-cancel-slot { padding: 6px 12px; background: #F5F5F5; color: var(--text-muted); font-weight: 700; border-radius: 6px; font-size: 0.85rem; }
+        
+        .payout-card { padding: 2rem; display: flex; flex-direction: column; gap: 1.5rem; position: relative; }
+        .payout-empty { text-align: center; padding: 2rem 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .payout-empty h4 { font-size: 1.1rem; margin-bottom: 8px; }
+        .payout-empty p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; }
+        
+        .payout-active-info { display: flex; flex-direction: column; gap: 1rem; }
+        .active-pill { background: #E8F5E9; color: #2ECC71; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; padding: 6px 12px; border-radius: 20px; align-self: flex-start; }
+        .payout-type-label { font-size: 0.95rem; }
+        .payout-details-list { background: #F9F9F9; padding: 1.25rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.6; }
+        .payout-details-list p { margin: 0; }
+        
+        .payout-form-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.96); z-index: 100; border-radius: inherit; padding: 1.5rem; overflow-y: auto; }
+        .payout-form-container { border: none; box-shadow: none; background: none; }
+        .form-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .form-header h4 { font-size: 1.1rem; margin: 0; }
+        .close-btn { background: none; color: var(--text-muted); cursor: pointer; }
       `}</style>
     </div>
   );
@@ -1077,7 +1356,7 @@ const BookingManagement = ({ bookings, onAction, onChat }) => {
               <div className="booking-details">
                 <div className="user-line">
                   <h3>{booking.user?.full_name || 'Guest'}</h3>
-                  <span className={`status-pill ${booking.status.toLowerCase()}`}>{booking.status}</span>
+                  <span className={`status-pill ${(booking.status || 'Pending').toLowerCase()}`}>{booking.status || 'Pending'}</span>
                 </div>
                 <p className="vehicle"><Car size={14} /> {booking.vehicle_details || 'Vehicle info N/A'}</p>
                 <p className="slot"><Clock size={14} /> {new Date(booking.start_time).toLocaleString()}</p>

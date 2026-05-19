@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Home, MapPin, Bookmark, Heart, User, LogOut, Loader2, 
-  Search, Bell, Map as MapIcon, ChevronRight, Clock, Star, Car
+  Search, Bell, Map as MapIcon, ChevronRight, Clock, Star, Car,
+  CheckCircle2, Image as ImageIcon, X, MessageSquare, Phone, AlertCircle
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
@@ -24,7 +25,7 @@ const UserDashboard = () => {
       
       const subscription = supabase
         .channel('public:user_dashboard')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings', filter: `user_id=eq.${user.id}` }, payload => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, payload => {
           fetchUserData();
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'parking_spots' }, payload => {
@@ -138,9 +139,9 @@ const UserDashboard = () => {
               <div className="tab-container">
                 {activeTab === 'overview' && <UserOverview activeBooking={activeBooking} bookings={bookings} parkingSpots={parkingSpots} setActiveTab={setActiveTab} navigate={navigate} />}
                 {activeTab === 'search' && <UserSearch parkingSpots={parkingSpots} navigate={navigate} />}
-                {activeTab === 'bookings' && <UserBookings bookings={bookings} />}
+                {activeTab === 'bookings' && <UserBookings bookings={bookings} navigate={navigate} />}
                 {activeTab === 'saved' && <UserSaved />}
-                {activeTab === 'profile' && <UserProfile profile={profile} />}
+                {activeTab === 'profile' && <UserProfile profile={profile} refresh={fetchUserData} />}
               </div>
             )}
           </main>
@@ -325,6 +326,8 @@ const UserOverview = ({ activeBooking, bookings, parkingSpots, setActiveTab, nav
         .sub-value { font-size: 0.9rem; color: var(--text-muted); }
         
         .dashboard-sections-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 2rem; }
+        .recent-activity { padding: 2rem; }
+        .featured-spots { padding: 2rem; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
         .reservations-list { display: flex; flex-direction: column; gap: 0.75rem; }
         .reservation-item { display: flex; align-items: center; justify-content: space-between; padding: 1rem; background: #F9F9F9; border-radius: 12px; transition: background 0.3s; cursor: pointer; }
@@ -412,7 +415,7 @@ const UserSearch = ({ parkingSpots, navigate }) => {
   );
 };
 
-const UserBookings = ({ bookings }) => {
+const UserBookings = ({ bookings, navigate }) => {
   return (
     <div className="bookings-tab fade-in">
        <div className="section-header">
@@ -426,7 +429,7 @@ const UserBookings = ({ bookings }) => {
                   <h3>{booking.parking_spots?.name || booking.parking_spots?.location}</h3>
                   <p className="loc"><MapPin size={14}/> {booking.parking_spots?.location}</p>
                </div>
-               <span className={`status-pill ${booking.status.toLowerCase()}`}>{booking.status}</span>
+               <span className={`status-pill ${(booking.status || 'Pending').toLowerCase()}`}>{booking.status || 'Pending'}</span>
              </div>
              <div className="b-details">
                 <div className="b-time">
@@ -483,6 +486,213 @@ const UserBookings = ({ bookings }) => {
 }
 
 const UserSaved = () => <div className="fade-in"><h1>Saved Spots</h1><p>Feature coming soon...</p></div>;
-const UserProfile = ({ profile }) => <div className="fade-in"><h1>Profile Settings</h1><p>{profile?.full_name}</p></div>;
+
+const UserProfile = ({ profile, refresh }) => {
+  const [formData, setFormData] = useState({
+    full_name: profile?.full_name || '',
+    phone: profile?.phone || '',
+    email: profile?.email || '',
+    address: profile?.address || '',
+    avatar_url: profile?.avatar_url || '',
+    notifications: true,
+    twoFactor: false
+  });
+  const [updating, setUpdating] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploadingAvatar(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      setFormData({ ...formData, avatar_url: publicUrl });
+    } catch (err) {
+      console.error('Avatar upload error:', err);
+      alert('Failed to upload profile picture');
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    setUpdating(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          full_name: formData.full_name,
+          phone: formData.phone,
+          address: formData.address,
+          avatar_url: formData.avatar_url
+        })
+        .eq('id', user.id);
+
+      if (error) throw error;
+      alert('Profile updated successfully!');
+      refresh();
+    } catch (err) {
+      console.error('Update error:', err);
+      alert('Failed to update profile');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  return (
+    <div className="profile-settings fade-in">
+      <div className="section-header">
+        <h1>Driver Profile Settings</h1>
+        <p>Update your personal information, address, and upload an avatar.</p>
+      </div>
+
+      <div className="profile-grid">
+        <div className="main-form card">
+          <div className="profile-header-edit">
+            <div className="avatar-upload-container">
+              <div className="profile-avatar-lg" style={{backgroundImage: `url(${formData.avatar_url || 'https://via.placeholder.com/150'})`}}>
+                <button className="edit-avatar-btn" onClick={() => document.getElementById('avatarInput').click()}>
+                  {uploadingAvatar ? <Loader2 size={16} className="spin" /> : <ImageIcon size={16} />}
+                </button>
+                <input type="file" id="avatarInput" hidden accept="image/*" onChange={handleAvatarUpload} />
+              </div>
+            </div>
+            <div className="header-text">
+              <h3>Driver Account Details</h3>
+              <p>ID: {profile?.id?.slice(0, 8)}...</p>
+            </div>
+          </div>
+          <form onSubmit={handleUpdate}>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Full Name</label>
+                <input 
+                  type="text" 
+                  value={formData.full_name} 
+                  onChange={e => setFormData({...formData, full_name: e.target.value})} 
+                />
+              </div>
+              <div className="form-group">
+                <label>Phone Number</label>
+                <input 
+                  type="tel" 
+                  value={formData.phone} 
+                  onChange={e => setFormData({...formData, phone: e.target.value})} 
+                />
+              </div>
+            </div>
+            <div className="form-group" style={{marginTop: '1rem'}}>
+              <label>Home Address</label>
+              <textarea 
+                value={formData.address} 
+                onChange={e => setFormData({...formData, address: e.target.value})} 
+                placeholder="Fill in your home address"
+                rows="2"
+              />
+            </div>
+            <div className="form-group" style={{marginTop: '1rem'}}>
+              <label>Email Address (read-only)</label>
+              <input type="email" value={formData.email} disabled />
+            </div>
+            <button className="btn-primary" type="submit" disabled={updating} style={{marginTop: '2rem'}}>
+              {updating ? "Saving Changes..." : "Update Driver Profile"}
+            </button>
+          </form>
+        </div>
+
+        <div className="sidebar-widgets">
+          <div className="health-card card">
+            <div className="health-score">
+              <div className="score-ring">
+                <div className="ring-inner">92%</div>
+              </div>
+              <div className="score-info">
+                <h4>Driver Level</h4>
+                <p>Frequent parker status active</p>
+              </div>
+            </div>
+            <button className="btn-text">Improve Score <ChevronRight size={14} /></button>
+          </div>
+
+          <div className="verification-card card">
+            <div className="v-item">
+              <CheckCircle2 size={18} color="#2ECC71" />
+              <span>Identity Verified</span>
+            </div>
+            <div className="v-item">
+              <CheckCircle2 size={18} color="#2ECC71" />
+              <span>Phone Verified</span>
+            </div>
+            <div className="v-item">
+              <CheckCircle2 size={18} color="#2ECC71" />
+              <span>Driver's License Sync</span>
+            </div>
+          </div>
+
+          <div className="settings-widget card">
+            <h4>Preferences</h4>
+            <div className="toggle-item">
+              <span>Email Booking Confirmation</span>
+              <div className="toggle active"></div>
+            </div>
+            <div className="toggle-item">
+              <span>SMS Parking Reminders</span>
+              <div className="toggle"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style jsx="true">{`
+        .profile-settings { max-width: 1000px; }
+        .section-header { margin-bottom: 2.5rem; }
+        .section-header h1 { font-size: 2rem; color: var(--text-dark); margin-bottom: 0.5rem; }
+        .section-header p { color: var(--text-muted); }
+        .profile-grid { display: grid; grid-template-columns: 1fr 300px; gap: 2rem; margin-top: 2rem; }
+        .main-form { padding: 2.5rem; }
+        .main-form h3 { margin-bottom: 2rem; font-size: 1.25rem; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.9rem; color: var(--text-dark); }
+        .form-group input { width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; background: #F9F9F9; }
+        .form-group input:focus { border-color: var(--primary-green); background: white; outline: none; }
+        .sidebar-widgets { display: flex; flex-direction: column; gap: 1.5rem; }
+        .health-card { padding: 1.5rem; }
+        .health-score { display: flex; align-items: center; gap: 1.5rem; margin-bottom: 1rem; }
+        .score-ring { width: 60px; height: 60px; border-radius: 50%; border: 4px solid var(--primary-green); display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--primary-green); }
+        .score-info h4 { margin: 0; font-size: 1rem; }
+        .score-info p { font-size: 0.75rem; color: var(--text-muted); margin: 0; }
+        .verification-card { padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+        .v-item { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; font-weight: 600; }
+        .settings-widget { padding: 1.5rem; }
+        .settings-widget h4 { margin-bottom: 1.25rem; font-size: 1rem; }
+        .toggle-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.9rem; }
+        .toggle { width: 40px; height: 20px; background: #E0E0E0; border-radius: 20px; position: relative; cursor: pointer; }
+        .toggle.active { background: var(--primary-green); }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: 0.3s; }
+        .toggle.active::after { left: 22px; }
+        .btn-text { background: none; color: var(--primary-green); font-weight: 700; font-size: 0.85rem; display: flex; align-items: center; gap: 4px; padding: 0; }
+        
+        .profile-header-edit { display: flex; gap: 2rem; align-items: center; margin-bottom: 2.5rem; }
+        .profile-avatar-lg { width: 100px; height: 100px; border-radius: 50%; background-size: cover; position: relative; border: 4px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.1); background-position: center; }
+        .edit-avatar-btn { position: absolute; bottom: 0; right: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--primary-green); color: white; display: flex; align-items: center; justify-content: center; border: none; cursor: pointer; }
+      `}</style>
+    </div>
+  );
+};
 
 export default UserDashboard;
